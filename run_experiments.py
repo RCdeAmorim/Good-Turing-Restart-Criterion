@@ -1,10 +1,20 @@
-from gt_kmeans import GTKmeans
 import os
+os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["OPENBLAS_NUM_THREADS"] = "1"
+os.environ["MKL_NUM_THREADS"] = "1"
+
+
+from gt_kmeans import GTKmeans
+from hart_kmeans import HartKmeans
+from oy_kmeans import OYKmeans
+from corominas_kmeans import CorominasKmeans
+#import os
 import numpy as np
 from scipy.io import loadmat
 from scipy.stats import wilcoxon
 from sklearn.cluster import KMeans
 import h5py
+import matplotlib
 import matplotlib.pyplot as plt
 import re
 from scipy.stats import spearmanr
@@ -45,6 +55,14 @@ def run_all(data_path:str):
             gt_distinct_partitions={}
             gt_lb_prob_km_converges_to_best_found={}
             km_results={}
+            hart_results={}
+            hart_runs={}
+            
+            oy_results={}
+            oy_runs={}
+            
+            co_results={}
+            co_runs={}
 
             #GTKmeans
             for eps in epsilons:
@@ -85,11 +103,62 @@ def run_all(data_path:str):
                     km=KMeans(n_clusters = k, n_init = runs).fit(data)
                     inertias.append(km.inertia_)
                 km_results[runs] = np.array(inertias)
+                print('k-means')
                 print(filename + '&' +
                       str(round(km_results[runs].mean(), inertia_decimal)) + '&' +
                       str(round(km_results[runs].std(), 2)) + '&' +
                       str(runs))
 
+
+            #Hart k-means
+            for beta in epsilons:
+                inertias = []
+                runs = []
+                for rep_i in range(n_reps):
+                    model = HartKmeans(k=k, beta = beta)
+                    hart_km = model.fit(data)
+                    inertias.append(hart_km.inertia_)
+                    runs.append(model.run_i)
+                hart_results[beta] = np.array(inertias)
+                hart_runs[beta] = np.array(runs)
+                print('Hart k-means')
+                print(filename + '&' + str(beta) + '&' +
+                      str(round(hart_results[beta].mean(), inertia_decimal)) + '&' +
+                      str(round(hart_results[beta].std(), 2)))
+                
+            #OY k-means
+            for e3 in epsilons:
+                inertias = []
+                runs = []
+                for rep_i in range(n_reps):
+                    model = OYKmeans(k=k, e3 = e3)
+                    oy_km = model.fit(data)
+                    inertias.append(oy_km.inertia_)
+                    runs.append(model.run_i)
+                oy_results[e3] = np.array(inertias)
+                oy_runs[e3] = np.array(runs)
+                print('OY k-means')
+                print(filename + '&' + str(e3) + '&' +
+                      str(round(oy_results[e3].mean(), inertia_decimal)) + '&' +
+                      str(round(oy_results[e3].std(), 2)))
+                
+            #Corominas k-means
+            for alpha in epsilons:
+                inertias = []
+                runs = []
+                for rep_i in range(n_reps):
+                    model = CorominasKmeans(k=k, alpha = alpha)
+                    co_km = model.fit(data)
+                    inertias.append(co_km.inertia_)
+                    runs.append(model.run_i)
+                co_results[alpha] = np.array(inertias)
+                co_runs[alpha] = np.array(runs)
+                print('Corominas k-means')
+                print(filename + '&' + str(alpha) + '&' +
+                      str(round(co_results[alpha].mean(), inertia_decimal)) + '&' +
+                      str(round(co_results[alpha].std(), 2)))
+
+            
             #Wilcoxon signed-ran tests: GT vs each baseline
             print('\n--- Wilcoxon tests for ' + filename + ' ---')
             wilcoxon_results = {}
@@ -108,33 +177,37 @@ def run_all(data_path:str):
                     print(f'GT(eps={eps}) vs fixed({b}): W={stat:.1f}, p={p:.4f} {sig}')
                     wilcoxon_results[eps][b] = {'stat': stat, 'p': p, 'identical': False}
             
-            np.savez(f'results_{filename}.npz',
+            np.savez(f'results_new_{filename}.npz',
                      gt_results=gt_results,
                      gt_runs=gt_runs,
                      gt_stop_crit=gt_stop_crit,
                      gt_distinct_partitions=gt_distinct_partitions,
                      gt_p_lo=gt_lb_prob_km_converges_to_best_found,
                      km_results=km_results,
-                     wilcoxon_results=wilcoxon_results)
+                     wilcoxon_results=wilcoxon_results, hart_results=hart_results,hart_runs=hart_runs,
+                     oy_results=oy_results,oy_runs=oy_runs,
+                     co_results=co_results,co_runs=co_runs
+                     )
             #print(os.path.abspath(f'results_{filename}.npz'))
     os.chdir(cwd)
 
 
-
-def plot_median_gap(results_path: str, epsilons=(0.05, 0.1), baselines=(10, 20, 50, 100)):
+def plot_median_gap(results_path: str, epsilon: float, baselines=(10, 20, 50, 100)):
     """
-    For each dataset, computes the % gap of each method's objective relative
-    to the best observed value (minimum across GTRC and all fixed
-    baselines), then plots the median restart count vs median % gap across
-    all datasets, for each method, with GTRC shown separately per epsilon.
+    For the given epsilon, computes the % gap of each method's objective
+    relative to the best observed value (minimum across GTRC and the
+    fixed baselines only), then plots the median restart count vs median
+    % gap across all datasets, on a log-scaled x-axis since restart
+    counts span from a handful (GTRC, Hart) to the OY cap of 1000.
     """
     cwd = os.getcwd()
     os.chdir(results_path)
     all_files = os.listdir()
 
     baselines = sorted(baselines)
-    gaps = {eps: {'GT': [], **{b: [] for b in baselines}} for eps in epsilons}
-    restarts = {eps: {'GT': [], **{b: [] for b in baselines}} for eps in epsilons}
+    methods = ['GT', 'Hart', 'OY', 'Co']
+    gaps = {'GT': [], 'Hart': [], 'OY': [], 'Co': [], **{b: [] for b in baselines}}
+    restarts = {'GT': [], 'Hart': [], 'OY': [], 'Co': [], **{b: [] for b in baselines}}
 
     for file in all_files:
         if file.endswith('.npz'):
@@ -142,54 +215,81 @@ def plot_median_gap(results_path: str, epsilons=(0.05, 0.1), baselines=(10, 20, 
             gt_results = f['gt_results'].item()
             gt_runs = f['gt_runs'].item()
             km_results = f['km_results'].item()
+            hart_results = f['hart_results'].item()
+            hart_runs = f['hart_runs'].item()
+            oy_results = f['oy_results'].item()
+            oy_runs = f['oy_runs'].item()
+            co_results = f['co_results'].item()
+            co_runs = f['co_runs'].item()
 
-            for eps in epsilons:
-                gt_mean = gt_results[eps].mean()
-                r_mean = gt_runs[eps].mean()
-                km_means = {b: km_results[b].mean() for b in baselines}
-                best = min([gt_mean] + list(km_means.values()))
+            gt_mean = gt_results[epsilon].mean()
+            hart_mean = hart_results[epsilon].mean()
+            oy_mean = oy_results[epsilon].mean()
+            co_mean = co_results[epsilon].mean()
+            km_means = {b: km_results[b].mean() for b in baselines}
 
-                gaps[eps]['GT'].append(100 * (gt_mean - best) / best if best != 0 else 0.0)
-                restarts[eps]['GT'].append(r_mean)
-                for b in baselines:
-                    gaps[eps][b].append(100 * (km_means[b] - best) / best if best != 0 else 0.0)
-                    restarts[eps][b].append(b)
+            # best is computed only across GTRC and the fixed baselines
+            best = min([gt_mean] + list(km_means.values()))
+
+            def gap(x):
+                return 100 * (x - best) / best if best != 0 else 0.0
+
+            gaps['GT'].append(gap(gt_mean))
+            restarts['GT'].append(gt_runs[epsilon].mean())
+
+            gaps['Hart'].append(gap(hart_mean))
+            restarts['Hart'].append(hart_runs[epsilon].mean())
+
+            gaps['OY'].append(gap(oy_mean))
+            restarts['OY'].append(oy_runs[epsilon].mean())
+
+            gaps['Co'].append(gap(co_mean))
+            restarts['Co'].append(co_runs[epsilon].mean())
+
+            for b in baselines:
+                gaps[b].append(gap(km_means[b]))
+                restarts[b].append(b)
 
     os.chdir(cwd)
 
-    points = {
-        eps: {m: (np.median(restarts[eps][m]), np.median(gaps[eps][m]))
-              for m in ['GT'] + baselines}
-        for eps in epsilons
+    points = {m: (np.median(restarts[m]), np.median(gaps[m])) for m in methods + list(baselines)}
+
+    method_style = {
+        'GT':   dict(marker='*', s=280, color='0',    label=rf'GTRC ($\varepsilon={epsilon}$)'),
+        'Hart': dict(marker='^', s=140, color='0.35', label=rf'Hart ($\beta={epsilon}$)'),
+        'OY':   dict(marker='s', s=120, color='0.6',  label=rf'Ohsaki--Yamakawa ($\epsilon={epsilon}$)'),
+        'Co':   dict(marker='D', s=120, color='0.8',  label=rf'Corominas ($\alpha={epsilon}$)'),
     }
 
     fig, ax = plt.subplots(figsize=(6.5, 5))
 
-    # fixed k-means++ frontier is identical across epsilons, plot once using the first epsilon
-    ref_eps = epsilons[0]
-    fixed_x = [points[ref_eps][b][0] for b in baselines]
-    fixed_y = [points[ref_eps][b][1] for b in baselines]
+    fixed_x = [points[b][0] for b in baselines]
+    fixed_y = [points[b][1] for b in baselines]
     ax.plot(fixed_x, fixed_y, color='0.4', linestyle='--', marker='o', markersize=7,
              markerfacecolor='0.7', markeredgecolor='black', label='fixed k-means++', zorder=2)
     for b, x, y in zip(baselines, fixed_x, fixed_y):
         ax.annotate(str(b), (x, y), textcoords="offset points", xytext=(0, 8), ha='center', fontsize=9)
 
-    markers_gray = ['0', '0.55', '0.8']
-    for i, eps in enumerate(epsilons):
-        gx, gy = points[eps]['GT']
-        shade = markers_gray[min(i, len(markers_gray) - 1)]
-        ax.scatter([gx], [gy], marker='*', s=280, color=shade, edgecolor='black',
-                    linewidth=0.8, zorder=3, label=rf'GTRC ($\varepsilon={eps}$)')
+    for m in methods:
+        style = method_style[m]
+        gx, gy = points[m]
+        ax.scatter([gx], [gy], marker=style['marker'], s=style['s'], color=style['color'],
+                    edgecolor='black', linewidth=0.8, zorder=3, label=style['label'])
         ax.annotate(f'{gx:.0f}', (gx, gy), textcoords="offset points", xytext=(10, -4), fontsize=9)
 
-    ax.set_xlabel('median restarts used')
+    ax.set_xscale('log')
+    ax.xaxis.set_major_formatter(matplotlib.ticker.ScalarFormatter())
+    ax.xaxis.set_minor_formatter(matplotlib.ticker.NullFormatter())
+    ax.set_xlabel('median restarts used (log scale)')
     ax.set_ylabel('median % gap to best observed objective')
     ax.legend(frameon=False, loc='upper right', fontsize=9)
     plt.tight_layout()
-    plt.savefig(os.path.join(results_path, 'median_gap.png'), dpi=150, bbox_inches='tight')
+    plt.savefig(os.path.join(results_path, f'median_gap_eps{epsilon}.png'), dpi=150, bbox_inches='tight')
     plt.show()
 
     return points
+
+
         
 def plot_restart_spread(results_path: str, epsilon: float = 0.05):
     cwd = os.getcwd()
@@ -199,7 +299,7 @@ def plot_restart_spread(results_path: str, epsilon: float = 0.05):
     rows = []
     for file in all_files:
         if file.endswith('.npz'):
-            name = file.replace('results_', '').replace('.npz', '').replace('_std', '').replace('_Std', '')
+            name = file.replace('results_new_new_', '').replace('.npz', '').replace('_std', '').replace('_Std', '')
             name = re.sub(r'(?<=[a-z])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])', ' ', name)
             f = np.load(file, allow_pickle=True)
             gt_runs = f['gt_runs'].item()
@@ -217,7 +317,8 @@ def plot_restart_spread(results_path: str, epsilon: float = 0.05):
     fig, ax = plt.subplots(figsize=(7, 9))
     ax.barh(range(len(names)), vals, color=colors, edgecolor='black', linewidth=0.5)
     ax.axvline(median_r, color='black', linestyle='--', linewidth=1)
-    ax.text(median_r + 0.5, len(names) - 0.5, f'median = {median_r:.0f}', fontsize=9, va='top')
+    ax.set_ylim(-1, len(names) + 1.5)
+    ax.text(median_r + 0.5, len(names) + 0.5, f'median = {median_r:.0f}', fontsize=9, va='top')
 
     ax.set_yticks(range(len(names)))
     ax.set_yticklabels(names, fontsize=8)

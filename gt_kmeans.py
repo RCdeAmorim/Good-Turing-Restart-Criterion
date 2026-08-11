@@ -19,7 +19,6 @@ def canonicalize(labels):
     return tuple(canonical)
 
 
-
 class GTKmeans():
     def __init__(self, k: int, epsilon: float, alpha: float = 0.05) -> None:
         self.k = k
